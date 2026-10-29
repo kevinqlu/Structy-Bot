@@ -2,6 +2,8 @@
 
 A private, owner-only Discord bot that times Structy study sessions. `!study` starts one, `!end` records it and runs the existing Structy-Hub sync script. SPEC.md is the source of truth.
 
+This is a personal practice project, not a hosted service. It runs on one person's Windows PC (the single-instance lock uses `msvcrt`), serves one owner, and its sync step depends on that owner's own Structy-Hub repo and Anki data.
+
 ## Commands
 
 | Command | What it does |
@@ -23,7 +25,7 @@ Only `OWNER_ID` can use these, and only in `CHANNEL_ID`. Everyone else gets no r
 2. **Enable the intent.** Under Bot, Privileged Gateway Intents, turn on **Message Content Intent**.
 3. **Invite it.** OAuth2, URL Generator, scope `bot`, permissions View Channels, Send Messages, Read Message History. Open the URL and add the bot to a private server.
 4. **Get your IDs.** In Discord, Settings, Advanced, turn on Developer Mode. Right-click yourself and the channel, Copy ID.
-5. **Create `.env`.** Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN`, `OWNER_ID`, `CHANNEL_ID`. `.env` is gitignored once you run `git init`.
+5. **Create `.env`.** Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN`, `OWNER_ID`, `CHANNEL_ID`. `.env` is gitignored; never commit it.
 6. **Optional: module list.** Free-text topics are accepted only until the first topic exists (`!addtopic`, or a valid `modules.json`); `!progress` needs `modules.json`. To try the real thing before the Structy-Hub project adds one, create `data\modules.json` here and set `MODULES_PATH` to it in `.env`:
 
 ```json
@@ -75,6 +77,17 @@ A missing or invalid required setting prints `Configuration error: ...` naming t
 12. `!end foo` and `!status now`. Expect "takes no arguments".
 13. Without `modules.json`, `!study @everyone`. Expect no ping and escaped text.
 14. `!study linked-list-i`, then `!cancel`. Expect nothing logged.
+
+## A possible public version
+
+A version other people could use is a possible future project, not something this repo does today. It would be a new design with its own spec, because it would need things v1 deliberately leaves out:
+
+- Always-on hosting instead of a terminal window on one PC.
+- Real per-user storage (a database) and a per-user timezone.
+- No Structy-Hub sync for other users: that step only works with the owner's own repo and Anki data, so a public version would be the timer, stats and topics only.
+- Rate limits, abuse handling, a privacy policy, and Discord's verification once the bot is in many servers.
+
+v1 keeps a few doors open: every record stores a `user_id`, storage sits behind one small module, and the "which day does a session belong to" rule lives in one function.
 
 ## Known limits
 
