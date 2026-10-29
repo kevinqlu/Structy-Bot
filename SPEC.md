@@ -14,7 +14,7 @@ The bot runs on Kevin's Windows PC (where the Anki data lives) and only needs to
 - No command runs arbitrary input. The bot executes exactly one fixed script with a fixed argument list.
 - The bot never writes directly to Structy-Hub (README, Anki data, `modules.json`, any file). It only reads `modules.json` and counts solution files there. The existing sync script, which the bot launches, does all writing.
 - No change to `update_readme.py`, `anki_progress.py`, `sync_progress.ps1` or the Roadmap table. Those are a separate project.
-- Later, not v1: optional note on `!end`; daily goal and reminders; weekly summary post; auto-start at Windows login; nudge after many sessions in a module without a new solve; `!addtopic`; rolling-24h or timezone-per-user day logic; public hosting.
+- Later, not v1: optional note on `!end`; daily goal and reminders; weekly summary post; auto-start at Windows login; nudge after many sessions in a module without a new solve; `!removetopic` (custom topics are removed by editing `data\custom_topics.json` by hand); rolling-24h or timezone-per-user day logic; public hosting.
 
 ## 3. Assumptions (decided by default; Kevin may overrule)
 
@@ -26,6 +26,9 @@ The bot runs on Kevin's Windows PC (where the Anki data lives) and only needs to
 - A6. Command names are case-insensitive (`!Study` works).
 - A7. If `modules.json` is valid, an unknown topic is refused. Free-text topics are accepted only when the file is missing or malformed.
 - A8. Overall progress percent = modules done / total modules in `modules.json`.
+- A9. Topics added with `!addtopic` live in the bot's own `data\custom_topics.json`, never in Structy-Hub. The effective topic list is `modules.json` modules (file order) followed by custom topics (order added). Custom topics have no folder or total, and `!progress` ignores them (it measures Structy modules only, so a custom topic cannot lower the percent).
+- A10. Free-text fallback applies only when there are no topics at all (no usable `modules.json` modules AND no custom topics). Once any topic exists, unknown topics are refused.
+- A11. At most 50 custom topics; a custom topic name is cleaned like a fallback topic and capped at 40 characters.
 
 ## 4. Configuration (`.env`, gitignored; `.env.example` is committed)
 
@@ -55,7 +58,7 @@ Rules:
 3. Ignore any message not in `CHANNEL_ID` (DMs included): no reply.
 4. Ignore messages that don't start with `!` immediately followed by a known command name (case-insensitive). `! study` (space after `!`) is not a command.
 5. All replies use `allowed_mentions=none` (nobody is pinged). Any user-supplied text shown in a reply has mentions escaped.
-6. Commands that take no arguments (`!end`, `!status`, `!cancel`, `!stats`, `!progress`) refuse extra text: they reply that the command takes no arguments and do nothing.
+6. Commands that take no arguments (`!end`, `!status`, `!cancel`, `!stats`, `!progress`, `!topics`) refuse extra text: they reply that the command takes no arguments and do nothing.
 7. Commands are handled one at a time, in arrival order. A sync that is still running does not block later commands (for example `!study` right after `!end`).
 8. If a command raises an unexpected error, the bot replies with a short generic error (no stack trace, no secrets, no file paths), logs the error server-side without the token, and keeps running. State is never left half-written (storage writes are atomic or append-only).
 
@@ -89,11 +92,11 @@ Normalize: lowercase, then remove spaces, hyphens and underscores. Surrounding w
 3. Else if it is a prefix of several: reply listing the candidates, ask for a more specific name, start nothing.
 4. Else: reply "unknown topic" with the valid topic names, start nothing.
 
-Empty topic (`!study` alone) when the file is valid: refused with the valid topic list. The stored topic is always the module's canonical `name`, never the user's raw text.
+Empty topic (`!study` alone) when the file is valid: refused with the valid topic list. The stored topic is always the module's canonical `name`, never the user's raw text. The reply to an empty topic asks which topic was meant (it does not say the topic is unknown); replies to empty, unknown and ambiguous topics point to `!topics`. Matching runs over the effective topic list (A9).
 
 Normalization removes only spaces, hyphens and underscores, so a name like `Array and String` matches `arrayandstring` and `array-and-string` and prefixes of those, but not `array string` (the word "and" is part of the name).
 
-Fallback mode (file missing or malformed): any non-empty topic is accepted as free text: whitespace collapsed, control characters removed, capped at 40 characters, mentions escaped when displayed. An empty topic is still refused. The bot tells Kevin it is in fallback mode.
+Fallback mode (no topics at all, A10: `modules.json` missing or malformed AND no custom topics): any non-empty topic is accepted as free text: whitespace collapsed, control characters removed, capped at 40 characters, mentions escaped when displayed. An empty topic is still refused. The bot tells Kevin it is in fallback mode.
 
 ## 8. Commands
 
@@ -139,6 +142,21 @@ Wording below is illustrative. Tests assert the facts (state, numbers, names), n
 - Summary line: done / in progress / not started counts and overall percent (A8).
 - Reply is shown as one message; if over Discord's message limit, split into several.
 
+### 8.7 `!topics` (no arguments)
+- Lists the effective topic list (A9): `modules.json` modules first, then custom topics marked as added. Read-only.
+- If `modules.json` is missing or malformed, add one line with the reason (as `!progress` does) and still list any custom topics.
+- If there are no topics at all, say so, say free-text topics are accepted, and point to `!addtopic`.
+- Long output is split like `!progress`.
+
+### 8.8 `!addtopic <name>`
+- The name is cleaned like a fallback topic (control characters removed, whitespace collapsed, capped at 40 characters). Empty after cleaning, or normalizing (section 7) to an empty string: refuse.
+- If the normalized name equals an existing topic's normalized name (in `modules.json` or custom): refuse and name the existing topic. Nothing is written.
+- If there are already 50 custom topics: refuse.
+- Otherwise append the cleaned name to `data\custom_topics.json` (atomic write) and confirm. The new topic is valid for `!study` immediately, with no restart.
+- If `data\custom_topics.json` exists but is malformed: refuse to add, say why in one line, and leave the file untouched (never overwrite it). It is treated as having no custom topics for matching, and `!topics` says it is unreadable.
+- A prefix typed for `!study` that matches both a Structy module and a new topic is ambiguous as usual; an exact match always wins (section 7).
+- The topic name is data only: it never reaches a command line or a file path.
+
 ## 9. Sync integration
 
 - Command (fixed argument list, no shell, nothing from Discord in it):
@@ -160,6 +178,7 @@ Wording below is illustrative. Tests assert the facts (state, numbers, names), n
   Timestamps are timezone-aware ISO 8601. `user_id` is stored on every record (future-proofing).
 - Startup reconciliation: if `current_session.json` exists and a record in `sessions.jsonl` has the same `user_id` and `start`, the session was already logged (crash between append and delete), so the session file is deleted.
 - A corrupt `current_session.json` is reported to Kevin and treated as no session; the file is renamed aside, not silently deleted.
+- `custom_topics.json`: `{"topics": ["Name", ...]}`, names in the order added, written atomically (temp file then rename). Missing file means no custom topics.
 - Reader rule: a line that is not valid JSON or lacks required fields is skipped and counted; it never breaks `!stats`.
 - Storage code sits behind one small module so the backend can change later.
 
@@ -281,3 +300,14 @@ Midnight crossing: a session 10-27 23:30 to 10-28 00:30 counts once, on 10-27, w
 33. An unexpected exception in a command produces a generic reply with no stack trace, and the next command still works.
 34. `!progress` never shows solved above total for a module (`11/11`, not `12/11`).
 35. `pytest` and `ruff check` both pass with no warnings on the finished slice.
+36. `!topics` lists every `modules.json` module in file order, then custom topics marked as added.
+37. `!topics` with no topics at all says so and points to `!addtopic`; with `modules.json` missing it adds the one-line reason and still lists custom topics.
+38. `!addtopic Heap` adds the topic; `!study heap` then starts a session on it without a restart, and the stored topic is the canonical name.
+39. `!addtopic` with a duplicate (any case, spacing or hyphens), an empty name, a separators-only name, or at 50 custom topics is refused and writes nothing.
+40. A malformed `custom_topics.json` is never overwritten: `!addtopic` refuses, `!topics` reports it, and the file's bytes are unchanged.
+41. With no `modules.json` and no custom topics, `!study anything` still works as free text; after one `!addtopic`, an unknown topic is refused.
+42. `!progress` ignores custom topics (its counts and percent are unchanged by `!addtopic`).
+43. `!topics foo` is refused; non-owner, wrong-channel, bot and `! topics` messages get no reply; `!ADDTOPIC x` works (case-insensitive).
+44. `@everyone` in an added name never pings (escaped in the confirmation and in `!topics`).
+45. `!study` with no topic asks which topic and points to `!topics`; unknown and ambiguous replies point to `!topics`.
+46. A write to `custom_topics.json` that fails midway leaves the previous file intact.

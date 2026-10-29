@@ -11,12 +11,21 @@ from structy_bot.modules import Module, ModulesError, load_modules
 from structy_bot.progress import compute_progress, format_progress
 from structy_bot.storage import SessionRecord
 from structy_bot.sync import SyncResult, SyncStatus
+from structy_bot.topics_store import (
+    AddResult,
+    AddStatus,
+    add_custom_topic,
+    effective_topics,
+    read_custom_topics,
+)
 
 log = logging.getLogger(__name__)
 
+MODULES_PROBLEM = "modules.json is missing or malformed: "
 GENERIC_ERROR = "Something went wrong running that command. Please try again."
 _COMMAND = re.compile(
-    r"!(study|end|status|cancel|stats|progress)(?:\s(.*))?", re.IGNORECASE | re.DOTALL
+    r"!(study|end|status|cancel|stats|progress|topics|addtopic)(?:\s(.*))?",
+    re.IGNORECASE | re.DOTALL,
 )
 # Own version of discord.utils.escape_mentions: that one needs 17+ digit ids, and
 # the spec wants any <@123> neutralised.
@@ -50,25 +59,70 @@ def _load_modules_or_none(config: Config) -> tuple[Sequence[Module] | None, str]
     try:
         return load_modules(config.modules_path), ""
     except ModulesError as error:
-        return None, f"{error}\n"
+        return None, str(error)
 
 
 def _study(args: str, config: Config, now: datetime) -> str:
     modules, problem = _load_modules_or_none(config)
-    return problem + sessions.study(config.data_dir, config.owner_id, args, modules, now)
+    topics = effective_topics(modules, read_custom_topics(config.data_dir).names)
+    if topics:
+        return sessions.study(config.data_dir, config.owner_id, args, topics, now)
+    lead = f"{MODULES_PROBLEM}{problem}\n" if problem else ""
+    return lead + sessions.study(config.data_dir, config.owner_id, args, None, now)
+
+
+def _topics(config: Config) -> str:
+    modules, problem = _load_modules_or_none(config)
+    custom = read_custom_topics(config.data_dir)
+    lines = [f"{MODULES_PROBLEM}{problem}"] if problem else []
+    if custom.malformed:
+        lines.append("custom_topics.json is unreadable, so I'm ignoring it.")
+    topics = effective_topics(modules, custom.names)
+    if not topics:
+        lines.append("No topics yet. Free-text topics are accepted. Use `!addtopic <name>` to add.")
+    module_count = len(modules or ())
+    for number, topic in enumerate(topics, 1):
+        lines.append(f"{number}. {topic.name}" + (" (added)" if number > module_count else ""))
+    return "\n".join(lines)
+
+
+def _describe_add(result: AddResult) -> str:
+    replies = {
+        AddStatus.ADDED: f"Added topic {result.name}. You can use it with !study right away.",
+        AddStatus.EMPTY: "That name is empty once cleaned. Please give a usable name.",
+        AddStatus.DUPLICATE: f"That topic already exists as {result.existing}.",
+        AddStatus.LIMIT_REACHED: (
+            "The limit of 50 custom topics is reached. "
+            r"You can edit data\custom_topics.json by hand."
+        ),
+        AddStatus.MALFORMED_FILE: (
+            r"data\custom_topics.json is unreadable, so nothing was changed. "
+            "Fix or delete it first."
+        ),
+    }
+    return replies[result.status]
+
+
+def _addtopic(args: str, config: Config) -> str:
+    if not args:
+        return "Please give a topic name: `!addtopic <name>`."
+    modules, _ = _load_modules_or_none(config)
+    return _describe_add(add_custom_topic(config.data_dir, args, modules))
 
 
 def _progress(config: Config) -> str:
     try:
         modules = load_modules(config.modules_path)
     except ModulesError as error:
-        return f"modules.json is missing or malformed: {error}"
+        return f"{MODULES_PROBLEM}{error}"
     return format_progress(compute_progress(modules, config.hub_path))
 
 
 def _dispatch(command: ParsedCommand, config: Config, now: datetime) -> Handled:
     if command.name == "study":
         return Handled(_study(command.args, config, now))
+    if command.name == "addtopic":
+        return Handled(_addtopic(command.args, config))
     if command.args:
         return Handled(f"!{command.name} takes no arguments.")
     if command.name == "end":
@@ -80,6 +134,8 @@ def _dispatch(command: ParsedCommand, config: Config, now: datetime) -> Handled:
         return Handled(sessions.cancel(config.data_dir))
     if command.name == "progress":
         return Handled(_progress(config))
+    if command.name == "topics":
+        return Handled(_topics(config))
     return Handled(stats_module.stats(config.data_dir, now))
 
 

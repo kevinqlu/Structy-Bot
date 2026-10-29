@@ -66,8 +66,10 @@ def _choose_topic(text: str, modules: Sequence[Module] | None) -> tuple[str | No
         return match.module.name, ""
     if match.kind is TopicKind.AMBIGUOUS:
         names = _names(match.candidates)
-        return None, f"That matches several topics: {names}. Please be more specific."
-    return None, f"I don't know that topic. Valid topics: {_names(modules)}."
+        return None, f"That matches several topics: {names}. Please be more specific (see !topics)."
+    if match.kind is TopicKind.EMPTY:
+        return None, f"Which topic? Use !topics to see the options: {_names(modules)}."
+    return None, f"I don't know that topic. Valid topics: {_names(modules)}. See !topics."
 
 
 def study(

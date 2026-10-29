@@ -12,6 +12,8 @@ A private, owner-only Discord bot that times Structy study sessions. `!study` st
 | `!cancel` | Discard the running session without logging it or syncing. |
 | `!stats` | Last 7 days: session count, total time, time per topic, streak. |
 | `!progress` | Per-module solved counts and overall percent. Needs a valid `modules.json`. |
+| `!topics` | List the topics `!study` accepts: `modules.json` modules, then topics you added. |
+| `!addtopic <name>` | Add your own topic (up to 50), usable with `!study` right away. Stored in `data\custom_topics.json`; `!progress` ignores it. |
 
 Only `OWNER_ID` can use these, and only in `CHANNEL_ID`. Everyone else gets no reply.
 
@@ -22,7 +24,7 @@ Only `OWNER_ID` can use these, and only in `CHANNEL_ID`. Everyone else gets no r
 3. **Invite it.** OAuth2, URL Generator, scope `bot`, permissions View Channels, Send Messages, Read Message History. Open the URL and add the bot to a private server.
 4. **Get your IDs.** In Discord, Settings, Advanced, turn on Developer Mode. Right-click yourself and the channel, Copy ID.
 5. **Create `.env`.** Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN`, `OWNER_ID`, `CHANNEL_ID`. `.env` is gitignored once you run `git init`.
-6. **Optional: module list.** Without `modules.json` the bot runs in fallback mode (free-text topics, `!progress` unavailable). To try the real thing before the Structy-Hub project adds one, create `data\modules.json` here and set `MODULES_PATH` to it in `.env`:
+6. **Optional: module list.** Free-text topics are accepted only until the first topic exists (`!addtopic`, or a valid `modules.json`); `!progress` needs `modules.json`. To try the real thing before the Structy-Hub project adds one, create `data\modules.json` here and set `MODULES_PATH` to it in `.env`:
 
 ```json
 {
