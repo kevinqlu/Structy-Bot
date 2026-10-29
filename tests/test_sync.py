@@ -263,3 +263,71 @@ def test_start_failed_and_lock_released(tmp_path):
     first, second = asyncio.run(twice())
     assert first == SyncResult(SyncStatus.START_FAILED, None, None)
     assert second.status is SyncStatus.COMPLETED
+
+
+# Slice 13b: hardening
+
+
+def test_child_does_not_inherit_discord_token_but_keeps_other_variables(tmp_path, monkeypatch):
+    monkeypatch.setenv("DISCORD_TOKEN", "secret-token")
+    monkeypatch.setenv("discord_token", "secret-lower")
+    out = tmp_path / "env.txt"
+    script = make_script(
+        tmp_path,
+        f"""
+        import os
+        names = [n.upper() for n in os.environ]
+        open({str(out)!r}, "w").write(
+            f"token={{'DISCORD_TOKEN' in names}} path={{'PATH' in names}}"
+        )
+        """,
+    )
+    result = run_sync(runner(script, tmp_path / "l.log"))
+    assert result.status is SyncStatus.COMPLETED
+    assert out.read_text() == "token=False path=True"
+
+
+class HangingProcess:
+    pid = 4242
+    returncode = None
+
+    async def wait(self) -> int:
+        await asyncio.Event().wait()
+        return 0
+
+    def kill(self) -> None:
+        pass
+
+
+class QuickProcess:
+    pid = 4243
+    returncode = 0
+
+    async def wait(self) -> int:
+        return 0
+
+
+def test_hung_kill_waits_are_bounded_and_lock_is_released(tmp_path, monkeypatch):
+    import structy_bot.sync as sync_module
+
+    monkeypatch.setattr(sync_module, "KILL_WAIT_SECONDS", 0.2, raising=False)
+    calls = []
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(args)
+        # 1st: the sync process, 2nd: taskkill, 3rd: a later healthy sync
+        return QuickProcess() if len(calls) == 3 else HangingProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    sync = runner(noop_script(tmp_path), tmp_path / "l.log", timeout=0.1)
+
+    async def twice():
+        began = time.monotonic()
+        first = await sync.run()
+        elapsed = time.monotonic() - began
+        return first, elapsed, await sync.run()
+
+    first, elapsed, second = asyncio.run(asyncio.wait_for(twice(), 5))
+    assert first.status is SyncStatus.TIMED_OUT
+    assert elapsed < 3
+    assert second.status is SyncStatus.COMPLETED

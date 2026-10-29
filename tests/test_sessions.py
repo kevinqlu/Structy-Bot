@@ -222,20 +222,39 @@ def test_record_is_written_before_session_file_is_deleted(
 ) -> None:
     start_hashing(tmp_path)
     original_delete = sessions_module.delete_current_session
+    seen: list[int] = []
 
-    def failing_delete(data_dir: Path) -> None:
-        raise OSError("disk went away")
+    def checking_delete(data_dir: Path) -> None:
+        seen.append(len(read_records(data_dir)[0]))
+        original_delete(data_dir)
 
-    monkeypatch.setattr(sessions_module, "delete_current_session", failing_delete)
+    monkeypatch.setattr(sessions_module, "delete_current_session", checking_delete)
+    end(tmp_path, START + timedelta(minutes=30), CAP_HOURS)
+    assert seen == [1]
+
+
+def test_delete_failure_after_append_still_returns_the_record_and_retry_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    start_hashing(tmp_path)
+    original_delete = sessions_module.delete_current_session
+
+    def locked_delete(data_dir: Path) -> None:
+        raise PermissionError("file is locked")
+
+    monkeypatch.setattr(sessions_module, "delete_current_session", locked_delete)
     now = START + timedelta(minutes=30)
-    with pytest.raises(OSError):
-        end(tmp_path, now, CAP_HOURS)
+    outcome = end(tmp_path, now, CAP_HOURS)
+    assert outcome.record is not None
     assert len(read_records(tmp_path)[0]) == 1
     assert session_file(tmp_path).exists()
+    assert "Logged Hashing: 30m." in outcome.reply
+    assert "!end again" in outcome.reply
 
     monkeypatch.setattr(sessions_module, "delete_current_session", original_delete)
     retry = end(tmp_path, now + timedelta(minutes=1), CAP_HOURS)
-    assert retry.record is not None  # still treated as logged, so a sync should follow
+    assert retry.record is not None
+    assert "!end again" not in retry.reply
     assert len(read_records(tmp_path)[0]) == 1
     assert not session_file(tmp_path).exists()
 

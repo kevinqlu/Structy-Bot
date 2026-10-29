@@ -1,4 +1,5 @@
-from datetime import UTC, date, datetime, timedelta, timezone
+import json
+from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from structy_bot.stats import Stats, compute_stats, format_stats, session_day, stats
@@ -174,3 +175,56 @@ def test_stats_reports_corrupt_lines_and_still_counts_good_ones(tmp_path: Path) 
     assert "1h 0m" in text
     assert "skipped 2" in text.lower()
     assert "streak: 2" in text.lower()
+
+
+def _history_line(start: str) -> bytes:
+    fields = {
+        "user_id": 1, "topic": "X", "start": start, "end": start,
+        "real_seconds": 5, "logged_seconds": 5, "capped": False,
+    }
+    return (json.dumps(fields) + "\n").encode()
+
+
+def test_stats_survives_absurd_timestamps_among_good_lines(tmp_path: Path) -> None:
+    append_record(tmp_path, rec("Hashing", 10, 29, 9, seconds=1800))
+    with (tmp_path / "sessions.jsonl").open("ab") as handle:
+        handle.write(_history_line("0001-01-01T00:00:00+14:00"))
+        handle.write(_history_line("9999-12-31T23:59:59-14:00"))
+    text = stats(tmp_path, NOW, PDT)
+    assert "1 session," in text
+    assert "30m" in text
+    assert "skipped 2" in text.lower()
+
+
+def test_stats_survives_deeply_nested_line(tmp_path: Path) -> None:
+    append_record(tmp_path, rec("Hashing", 10, 29, 9, seconds=1800))
+    with (tmp_path / "sessions.jsonl").open("ab") as handle:
+        handle.write(b"[" * 200_000 + b"\n")
+    text = stats(tmp_path, NOW, PDT)
+    assert "1 session," in text
+    assert "skipped 1" in text.lower()
+
+
+class _FailsIn2000(tzinfo):
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        return timedelta(0)
+
+    def dst(self, dt: datetime | None) -> timedelta:
+        return timedelta(0)
+
+    def fromutc(self, dt: datetime) -> datetime:
+        if dt.year == 2000:
+            raise OverflowError("date value out of range")
+        return dt
+
+
+def test_compute_stats_skips_a_record_whose_day_conversion_fails() -> None:
+    odd = SessionRecord(
+        USER, "Odd", datetime(2000, 1, 1, tzinfo=UTC), datetime(2000, 1, 1, 1, tzinfo=UTC),
+        3600, 3600, False,
+    )
+    now = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
+    good = rec("Hashing", 10, 29, 9, seconds=1800, tz=UTC)
+    result = compute_stats([odd, good], now, _FailsIn2000())
+    assert result.session_count == 1
+    assert result.total_seconds == 1800

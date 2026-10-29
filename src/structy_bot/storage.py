@@ -1,3 +1,4 @@
+import codecs
 import json
 import os
 import tempfile
@@ -9,6 +10,8 @@ from typing import Any, BinaryIO
 
 SESSION_FILE = "current_session.json"
 HISTORY_FILE = "sessions.jsonl"
+# A hand-edited year far outside this range breaks local-time conversion (OverflowError).
+MIN_YEAR, MAX_YEAR = 2000, 2100
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,8 @@ def _aware(value: Any) -> datetime:
     parsed = datetime.fromisoformat(value)
     if parsed.utcoffset() is None:
         raise ValueError("timestamp must be timezone-aware")
+    if not MIN_YEAR <= parsed.year <= MAX_YEAR:
+        raise ValueError("timestamp year out of range")
     return parsed
 
 
@@ -107,7 +112,7 @@ def write_current_session(data_dir: Path, session: CurrentSession) -> None:
 def read_current_session(data_dir: Path) -> tuple[CurrentSession | None, bool]:
     path = data_dir / SESSION_FILE
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return None, False
     except UnicodeDecodeError:
@@ -115,7 +120,7 @@ def read_current_session(data_dir: Path) -> tuple[CurrentSession | None, bool]:
         return None, True
     try:
         return _parse_session(text), False
-    except (ValueError, KeyError, TypeError):  # JSONDecodeError is a ValueError
+    except (ValueError, KeyError, TypeError, RecursionError):  # JSONDecodeError is a ValueError
         _move_aside(path)
         return None, True
 
@@ -131,12 +136,12 @@ def read_records(data_dir: Path) -> tuple[list[SessionRecord], int]:
         return [], 0
     records: list[SessionRecord] = []
     skipped = 0
-    for line in raw.split(b"\n"):
+    for line in raw.removeprefix(codecs.BOM_UTF8).split(b"\n"):
         if not line.strip():
             continue
         try:
             records.append(_parse_record(json.loads(line.decode("utf-8"))))
-        except (ValueError, KeyError, TypeError):  # includes JSON and UTF-8 decode errors
+        except (ValueError, KeyError, TypeError, RecursionError):  # includes JSON/UTF-8 errors
             skipped += 1
     return records, skipped
 

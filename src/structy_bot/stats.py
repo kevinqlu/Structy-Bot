@@ -34,14 +34,25 @@ def _streak(days: set[date], today: date) -> int:
     return streak
 
 
+def _dated(
+    records: Sequence[SessionRecord], local_tz: tzinfo | None
+) -> list[tuple[date, SessionRecord]]:
+    dated = []
+    for r in records:
+        try:
+            dated.append((session_day(r.start, local_tz), r))
+        except (OverflowError, OSError, ValueError):  # one odd timestamp must not sink !stats
+            continue
+    return dated
+
+
 def compute_stats(
     records: Sequence[SessionRecord], now: datetime, local_tz: tzinfo | None = None
 ) -> Stats:
     today = session_day(now, local_tz)
     window_start = today - timedelta(days=WINDOW_DAYS - 1)
     # Days after today (clock skew) are ignored for the window and the streak alike.
-    dated = [(session_day(r.start, local_tz), r) for r in records]
-    dated = [(day, r) for day, r in dated if day <= today]
+    dated = [(day, r) for day, r in _dated(records, local_tz) if day <= today]
     per_topic: defaultdict[str, int] = defaultdict(int)
     in_window = [r for day, r in dated if day >= window_start]
     for r in in_window:

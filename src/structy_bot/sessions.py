@@ -19,6 +19,10 @@ MIN_LOGGED_SECONDS = 60
 CORRUPT_NOTE = (
     "The saved session file was unreadable; I moved it aside and am treating it as no session.\n"
 )
+CLEANUP_NOTE = (
+    " The session is logged, but I couldn't remove the old session file;"
+    " send !end again to retry the cleanup."
+)
 FALLBACK_NOTE = (
     " (The module list is unavailable, so I'm in fallback mode and took your topic as free text.)"
 )
@@ -120,14 +124,18 @@ def _log_session(
     if not append_record(data_dir, record):
         # Already logged by an earlier attempt: report what is on disk, not this call's numbers.
         record = _stored_record(data_dir, record) or record
-    delete_current_session(data_dir)
+    leftover = ""
+    try:
+        delete_current_session(data_dir)
+    except OSError:  # the record is safe on disk; the sync must still run
+        leftover = CLEANUP_NOTE
     reply = f"Logged {record.topic}: {format_duration(record.logged_seconds)}."
     if record.capped:
         reply += (
             f" The session actually ran {format_duration(record.real_seconds)}, "
             f"so it was capped at {format_duration(record.logged_seconds)}."
         )
-    return EndOutcome(reply, record)
+    return EndOutcome(reply + leftover, record)
 
 
 def end(data_dir: Path, now: datetime, max_session_hours: float) -> EndOutcome:

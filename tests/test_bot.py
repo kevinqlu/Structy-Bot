@@ -341,3 +341,60 @@ def test_long_progress_reply_is_split_into_chunks_with_no_mentions(tmp_path: Pat
     assert len(channel.sent) > 1
     assert all(len(text) <= 2000 for text, _ in channel.sent)
     assert all(kwargs == {"allowed_mentions": NO_MENTIONS} for _, kwargs in channel.sent)
+
+
+# Slice 13b: startup robustness
+
+
+class RaisingChannel(FakeChannel):
+    async def send(self, text: str, **kwargs: Any) -> None:
+        raise RuntimeError("discord down")
+
+
+@pytest.mark.parametrize("channel", [RaisingChannel(), None], ids=["send-raises", "no-channel"])
+def test_unsent_corrupt_note_is_kept_and_prepended_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, channel: Any
+) -> None:
+    config = make_config(tmp_path)
+    config.data_dir.mkdir()
+    (config.data_dir / "current_session.json").write_text("{broken", encoding="utf-8")
+    client = create_client(config)
+    monkeypatch.setattr(client, "get_channel", lambda channel_id: channel)
+    reconciled: list[Path] = []
+    real = storage.reconcile_startup
+    monkeypatch.setattr(
+        storage, "reconcile_startup", lambda d: reconciled.append(d) or real(d)
+    )
+    reply = FakeChannel()
+
+    async def go() -> None:
+        await client.on_ready()
+        await client.process_message(fake_message("!status", channel=reply))
+        await client.process_message(fake_message("!status", channel=reply))
+
+    asyncio.run(go())
+    assert reconciled == [config.data_dir]
+    first, second = reply.sent[0][0], reply.sent[1][0]
+    assert "unreadable" in first and "No session" in first
+    assert "unreadable" not in second and "No session" in second
+
+
+def test_startup_reconciles_already_logged_session_through_the_bot(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    start = datetime.now().astimezone() - timedelta(hours=1)
+    storage.write_current_session(config.data_dir, CurrentSession(OWNER, "Hashing", start))
+    record = storage.SessionRecord(OWNER, "Hashing", start, start + timedelta(minutes=30),
+                                   1800, 1800, False)
+    storage.append_record(config.data_dir, record)
+    history = config.data_dir / "sessions.jsonl"
+    before = history.read_bytes()
+    client = create_client(config)
+    client.get_channel = lambda channel_id: FakeChannel()  # type: ignore[method-assign]
+
+    async def twice() -> None:
+        await client.on_ready()
+        await client.on_ready()
+
+    asyncio.run(twice())
+    assert not (config.data_dir / "current_session.json").exists()
+    assert history.read_bytes() == before

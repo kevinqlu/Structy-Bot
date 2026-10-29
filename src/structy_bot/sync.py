@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -10,6 +12,8 @@ TAIL_BYTES = 4096
 MAX_LOG_CHARS = 300
 STAMP_FORMAT = "%Y-%m-%dT%H:%M:%S"
 STAMP_LENGTH = 19
+KILL_WAIT_SECONDS = 10
+log = logging.getLogger(__name__)
 
 
 class SyncStatus(Enum):
@@ -32,6 +36,11 @@ def default_argv(script_path: Path) -> list[str]:
         "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-File", str(script_path),
     ]  # fmt: skip
+
+
+def _child_env() -> dict[str, str]:
+    # The sync script and its git/python children have no use for the bot token.
+    return {k: v for k, v in os.environ.items() if k.upper() != "DISCORD_TOKEN"}
 
 
 def _last_log_line(log_path: Path) -> str | None:
@@ -62,17 +71,26 @@ def fresh_message(log_path: Path, started: datetime) -> str | None:
 
 async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
     # A plain proc.kill() would orphan git/python children still holding index.lock.
+    # Every wait is bounded so a hung taskkill cannot keep the runner's lock forever.
     try:
         killer = await asyncio.create_subprocess_exec(
             "taskkill", "/PID", str(proc.pid), "/T", "/F",
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )  # fmt: skip
-        failed = await killer.wait() != 0
-    except OSError:
+        failed = await asyncio.wait_for(killer.wait(), KILL_WAIT_SECONDS) != 0
+    except (OSError, TimeoutError) as error:
+        _log_kill_problem(error)
         failed = True
     if failed and proc.returncode is None:
         proc.kill()
-    await proc.wait()
+    try:
+        await asyncio.wait_for(proc.wait(), KILL_WAIT_SECONDS)
+    except TimeoutError as error:
+        _log_kill_problem(error)
+
+
+def _log_kill_problem(error: Exception) -> None:
+    log.warning("sync kill step failed with %s", type(error).__name__)
 
 
 class SyncRunner:
@@ -104,7 +122,7 @@ class SyncRunner:
         started = self._clock().replace(microsecond=0)
         try:
             proc = await asyncio.create_subprocess_exec(
-                *self._argv_builder(self.script_path),
+                *self._argv_builder(self.script_path), env=_child_env(),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )  # fmt: skip
         except OSError:

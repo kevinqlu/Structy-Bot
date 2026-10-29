@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sys
 from datetime import datetime
 from typing import Any
 
@@ -8,6 +9,7 @@ import discord
 from structy_bot import storage
 from structy_bot.config import Config, load_or_exit
 from structy_bot.handler import describe_sync, handle_message
+from structy_bot.instance_lock import InstanceLockError, acquire_instance_lock
 from structy_bot.progress import split_message
 from structy_bot.sessions import CORRUPT_NOTE
 from structy_bot.sync import SyncRunner
@@ -29,17 +31,31 @@ class StructyClient(discord.Client):
         # One command at a time, in arrival order (SPEC 5 rule 7). The sync runs
         # OUTSIDE this lock so a slow sync never blocks later commands.
         self._lock = asyncio.Lock()
+        self._pending_note: str | None = None
 
     async def on_ready(self) -> None:
-        data_dir = self.config.data_dir
-        channel = self.get_channel(self.config.channel_id)
-        if channel is None:
-            log.warning("Cannot see the configured channel; check CHANNEL_ID and permissions")
-        # reconcile_startup cannot report corruption, so check first.
-        _, corrupt = storage.read_current_session(data_dir)
-        if corrupt and channel is not None:
-            await channel.send(CORRUPT_NOTE.strip(), allowed_mentions=NO_MENTIONS)  # type: ignore[union-attr]
-        storage.reconcile_startup(data_dir)
+        # Under the command lock: on_ready can fire again after a gateway reconnect.
+        async with self._lock:
+            data_dir = self.config.data_dir
+            channel = self.get_channel(self.config.channel_id)
+            if channel is None:
+                log.warning("Cannot see the configured channel; check CHANNEL_ID and permissions")
+            # reconcile_startup cannot report corruption, so check first.
+            _, corrupt = storage.read_current_session(data_dir)
+            if corrupt:
+                await self._announce_corrupt(channel)
+            storage.reconcile_startup(data_dir)
+
+    async def _announce_corrupt(self, channel: Any) -> None:
+        # The file is already moved aside, so an unsent note rides on the next reply.
+        note = CORRUPT_NOTE.strip()
+        try:
+            if channel is None:
+                raise LookupError("channel not visible")
+            await channel.send(note, allowed_mentions=NO_MENTIONS)
+        except Exception as error:
+            log.error("sending corrupt-session note failed with %s", type(error).__name__)
+            self._pending_note = note
 
     async def on_message(self, message: discord.Message) -> None:
         await self.process_message(message)
@@ -57,6 +73,9 @@ class StructyClient(discord.Client):
 
     async def _send_reply(self, channel: Any, text: str) -> None:
         # A failed send must not stop the sync for a session that is already recorded.
+        note, self._pending_note = self._pending_note, None
+        if note:
+            text = note + "\n\n" + text
         try:
             for chunk in split_message(text):
                 await channel.send(chunk, allowed_mentions=NO_MENTIONS)
@@ -85,6 +104,11 @@ def create_client(config: Config) -> StructyClient:
 
 def main() -> None:
     config = load_or_exit()
+    try:
+        _instance_lock = acquire_instance_lock(config.data_dir)  # open until main returns
+    except InstanceLockError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        raise SystemExit(1) from None
     create_client(config).run(config.discord_token)
 
 

@@ -1,3 +1,4 @@
+import codecs
 import json
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -301,3 +302,74 @@ def test_reconcile_with_corrupt_session_renames_it_aside(tmp_path: Path) -> None
     session_path(tmp_path).write_bytes(b"{broken")
     assert reconcile_startup(tmp_path) is False
     assert (tmp_path / "current_session.corrupt.json").read_bytes() == b"{broken"
+
+
+# BOM, deep nesting and absurd timestamps
+DEEP = b"[" * 200_000
+
+
+def test_session_with_utf8_bom_reads_as_normal(tmp_path: Path) -> None:
+    write_current_session(tmp_path, session())
+    session_path(tmp_path).write_bytes(codecs.BOM_UTF8 + session_path(tmp_path).read_bytes())
+    assert read_current_session(tmp_path) == (session(), False)
+    assert [p.name for p in tmp_path.iterdir()] == ["current_session.json"]
+
+
+def test_history_with_utf8_bom_reads_and_dedupes(tmp_path: Path) -> None:
+    history_path(tmp_path).write_bytes(codecs.BOM_UTF8 + good_line().encode() + b"\n")
+    assert read_records(tmp_path)[1] == 0
+    assert len(read_records(tmp_path)[0]) == 1
+    assert append_record(tmp_path, record(user_id=1)) is False
+    assert len(history_path(tmp_path).read_text(encoding="utf-8-sig").splitlines()) == 1
+
+
+def test_deeply_nested_history_line_is_skipped_not_fatal(tmp_path: Path) -> None:
+    content = good_line(user_id=1).encode() + b"\n" + DEEP + b"\n" + good_line(user_id=2).encode()
+    history_path(tmp_path).write_bytes(content)
+    records, skipped = read_records(tmp_path)
+    assert [r.user_id for r in records] == [1, 2]
+    assert skipped == 1
+    assert append_record(tmp_path, record(user_id=3)) is True
+
+
+def test_deeply_nested_session_file_is_corrupt(tmp_path: Path) -> None:
+    session_path(tmp_path).write_bytes(DEEP)
+    assert read_current_session(tmp_path) == (None, True)
+    assert (tmp_path / "current_session.corrupt.json").read_bytes() == DEEP
+
+
+@pytest.mark.parametrize(
+    ("stamp", "accepted"),
+    [
+        ("0001-01-01T00:00:00+14:00", False),
+        ("9999-12-31T23:59:59-14:00", False),
+        ("1999-12-31T23:59:59+00:00", False),
+        ("2101-01-01T00:00:00+00:00", False),
+        ("2000-01-01T00:00:00+00:00", True),
+        ("2100-12-31T23:59:59+00:00", True),
+    ],
+)
+def test_timestamp_year_bounds_for_records(tmp_path: Path, stamp: str, accepted: bool) -> None:
+    history_path(tmp_path).write_text(good_line(start=stamp) + "\n", encoding="utf-8")
+    records, skipped = read_records(tmp_path)
+    assert (len(records), skipped) == ((1, 0) if accepted else (0, 1))
+
+
+def test_end_timestamp_out_of_range_skips_record(tmp_path: Path) -> None:
+    history_path(tmp_path).write_text(good_line(end="9999-12-31T23:59:59-14:00") + "\n")
+    assert read_records(tmp_path) == ([], 1)
+
+
+@pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00+14:00", "9999-12-31T23:59:59-14:00"])
+def test_session_timestamp_out_of_range_is_corrupt(tmp_path: Path, stamp: str) -> None:
+    content = json.dumps({"user_id": 1, "topic": "A", "start": stamp}).encode()
+    session_path(tmp_path).write_bytes(content)
+    assert read_current_session(tmp_path) == (None, True)
+    assert (tmp_path / "current_session.corrupt.json").read_bytes() == content
+
+
+def test_session_year_bounds_accept_edges(tmp_path: Path) -> None:
+    for year in (2000, 2100):
+        stamp = datetime(year, 6, 1, tzinfo=UTC)
+        write_current_session(tmp_path, session(start=stamp))
+        assert read_current_session(tmp_path) == (session(start=stamp), False)
