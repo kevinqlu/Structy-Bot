@@ -89,6 +89,10 @@ A version other people could use is a possible future project, not something thi
 
 v1 keeps a few doors open: every record stores a `user_id`, storage sits behind one small module, and the "which day does a session belong to" rule lives in one function.
 
+## License
+
+MIT. See `LICENSE`.
+
 ## Known limits
 
 See SPEC.md section 13. Notable: history stores the topic as text, so renaming a module splits its stats; the sync lock cannot see a manual run of the script.
