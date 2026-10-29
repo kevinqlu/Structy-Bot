@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "structy-bot"
+version = "0.1.0"
+description = "Private Discord bot that times Structy study sessions and logs them."
+requires-python = ">=3.11"
+dependencies = ["discord.py", "python-dotenv"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+# Only the discord.py audioop import notice; no blanket ignores.
+filterwarnings = ["ignore:.audioop. is deprecated:DeprecationWarning:discord.player"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
